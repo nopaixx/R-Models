@@ -1,0 +1,166 @@
+{
+  "cells": [
+    {
+      "metadata": {
+        "_uuid": "b952d9d94d0265cfb491a09a02ce3a7b3b93b51a",
+        "_execution_state": "idle",
+        "trusted": true
+      },
+      "cell_type": "code",
+      "source": "## Importing packages\n\n# This R environment comes with all of CRAN and many other helpful packages preinstalled.\n# You can see which packages are installed by checking out the kaggle/rstats docker image: \n# https://github.com/kaggle/docker-rstats\n\nlibrary(tidyverse) # metapackage with lots of helpful functions\nlibrary(caret)\n\n## Running code\n\n# In a notebook, you can run a single code cell by clicking in the cell and then hitting \n# the blue arrow to the left, or by clicking in the cell and pressing Shift+Enter. In a script, \n# you can run code by highlighting the code you want to run and then clicking the blue arrow\n# at the bottom of this window.\n\n## Reading in files\n\n# You can access files from datasets you've added to this kernel in the \"../input/\" directory.\n# You can see the files added to this kernel by running the code below. \n\nlist.files(path = \"../input\")\n\n## Saving data\n\n# If you save any files or images, these will be put in the \"output\" directory. You \n# can see the output directory by committing and running your kernel (using the \n# Commit & Run button) and then checking out the compiled version of your kernel.\n\nlibrary(h2o)\nh2o.init(nthreads=-1,min_mem_size=\"16g\",max_mem_size=\"16g\")\nSTOP_WORDS = c(\"ax\",\"i\",\"you\",\"edu\",\"s\",\"t\",\"m\",\"subject\",\"can\",\"lines\",\"re\",\"what\",\n               \"there\",\"all\",\"we\",\"one\",\"the\",\"a\",\"an\",\"of\",\"or\",\"in\",\"for\",\"by\",\"on\",\n               \"but\",\"is\",\"in\",\"a\",\"not\",\"with\",\"as\",\"was\",\"if\",\"they\",\"are\",\"this\",\"and\",\"it\",\"have\",\n               \"from\",\"at\",\"my\",\"be\",\"by\",\"not\",\"that\",\"to\",\"from\",\"com\",\"org\",\"like\",\"likes\",\"so\")\n\ntokenize <- function(sentences, stop.words = STOP_WORDS) {\n    tokenized <- h2o.tokenize(sentences, \"\\\\\\\\W+\")\n\n    # convert to lower case\n    tokenized.lower <- h2o.tolower(tokenized)\n    # remove short words (less than 2 characters)\n    tokenized.lengths <- h2o.nchar(tokenized.lower)\n    tokenized.filtered <- tokenized.lower[is.na(tokenized.lengths) || tokenized.lengths >= 2,]\n    # remove words that contain numbers\n    tokenized.words <- tokenized.filtered[h2o.grep(\"[0-9]\", tokenized.filtered, invert = TRUE, output.logical = TRUE),]\n\n    # remove stop words\n    tokenized.words[is.na(tokenized.words) || (! tokenized.words %in% STOP_WORDS),]\n}",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "c57153064554b77b7685796c0749acb92de4d314"
+      },
+      "cell_type": "code",
+      "source": "train.questions.path = \"../input/train.csv\"\n\ntrain.quest <- h2o.importFile(train.questions.path, destination_frame = \"questions\",\n                             col.names = c(\"qid\", \"question_text\",\"target\"), col.types = c(\"Enum\", \"String\",\"Enum\"), header = TRUE)\n\nprint(\"Break question into sequence of words\")\nwords <- tokenize(train.quest$question_text)\nprint(\"Build word2vec model\")\nw2v.model <- h2o.word2vec(words, sent_sample_rate = 0, epochs = 20,window_size=5,vec_size=50,min_word_freq=5)\nprint(\"Sanity check - find synonyms for the word 'teacher', 'python','kaggle'\")\nprint(h2o.findSynonyms(w2v.model, \"teacher\", count = 5))\nprint(h2o.findSynonyms(w2v.model, \"python\", count = 5))\nprint(h2o.findSynonyms(w2v.model, \"kaggle\", count = 5))\nprint(\"Calculate a vector for each question\")\ntrain.questions.vecs <- h2o.transform(w2v.model, words, aggregate_method = \"AVERAGE\")\nprint(\"DONE\")",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "c8355a6966a1e6188d000d8ed6fc9868e816211d"
+      },
+      "cell_type": "code",
+      "source": "print(\"Prepare training&validation data (keep only questions made of known words)\")\nvalid.train.questions <- ! is.na(train.questions.vecs$C1)\nprint(valid.train.questions)\ndata <- h2o.cbind( train.questions.vecs[valid.train.questions, ],train.quest[valid.train.questions, \"target\"])",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "e27f528d6880c61d617976b278d4e40f5cc262fb"
+      },
+      "cell_type": "code",
+      "source": "data.split <- h2o.splitFrame(data, ratios =c(0.6,0.2))\n\ntrain <- data.split[[1]]\nvalid <- data.split[[2]]\ntest  <- data.split[[3]]\n\nresponse <- \"target\"\n## the response variable is an integer, we will turn it into a categorical/factor for binary classification\n## use all other columns (except for the name) as predictors\npredictors <- setdiff(names(train), c(response))\n\n\nprint(\"DONE\")",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "288dc99050a2bba2e7f41d38934175c5e5f5d9da"
+      },
+      "cell_type": "code",
+      "source": "## We only provide the required parameters, everything else is default\ngbm <- h2o.gbm(x = predictors, y = response, training_frame = train)\n## Show a detailed model summary\ngbm\n## Get the AUC on the validation set\nh2o.auc(h2o.performance(gbm, newdata = valid))",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "1a0ef0711d448a4fd14dc75209c38d72f6c76af8"
+      },
+      "cell_type": "code",
+      "source": "#The second model is another default GBM, but trained on 80% of the data (here, we combine the training and validation splits to get more training data), and cross-validated using 4 folds.\n#Note that cross-validation takes longer and is not usually done for really large datasets.\n## h2o.rbind makes a copy here, so it's better to use splitFrame with `ratios = c(0.8)` instead above\ngbm <- h2o.gbm(x = predictors, y = response, training_frame = h2o.rbind(train, valid), nfolds = 4, seed = 0xDECAF)\n## Show a detailed summary of the cross validation metrics\n## This gives you an idea of the variance between the folds\ngbm@model$cross_validation_metrics_summary\n## Get the cross-validated AUC by scoring the combined holdout predictions.\n## (Instead of taking the average of the metrics across the folds)\nh2o.auc(h2o.performance(gbm, xval = TRUE))",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "_uuid": "984d29547865815aba29d50497cbf6ee23d3ce79"
+      },
+      "cell_type": "markdown",
+      "source": "Hyper-Parameter Search\nNext, we’ll do real hyper-parameter optimization to see if we can beat the best AUC so far (around 93%).\nThe key here is to start tuning some key parameters first (i.e., those that we expect to have the biggest impact on the results). From experience with gradient boosted trees across many datasets, we can state the following “rules”:\n\nBuild as many trees (ntrees) as it takes until the validation set error starts increasing.\nA lower learning rate (learn_rate) is generally better, but will require more trees. Using learn_rate=0.02and learn_rate_annealing=0.995 (reduction of learning rate with each additional tree) can help speed up convergence without sacrificing accuracy too much, and is great to hyper-parameter searches. For faster scans, use values of 0.05 and 0.99 instead.\nThe optimum maximum allowed depth for the trees (max_depth) is data dependent, deeper trees take longer to train, especially at depths greater than 10.\nRow and column sampling (sample_rate and col_sample_rate) can improve generalization and lead to lower validation and test set errors. Good general values for large datasets are around 0.7 to 0.8 (sampling 70-80 percent of the data) for both parameters. Column sampling per tree (col_sample_rate_per_tree) can also be tuned. Note that it is multiplicative with col_sample_rate, so setting both parameters to 0.8 results in 64% of columns being considered at any given node to split.\nFor highly imbalanced classification datasets (e.g., fewer buyers than non-buyers), stratified row sampling based on response class membership can help improve predictive accuracy. It is configured with sample_rate_per_class (array of ratios, one per response class in lexicographic order).\nMost other options only have a small impact on the model performance, but are worth tuning with a Random hyper-parameter search nonetheless, if highest performance is critical.\nFirst we want to know what value of max_depth to use because it has a big impact on the model training time and optimal values depend strongly on the dataset.\nWe’ll do a quick Cartesian grid search to get a rough idea of good candidate max_depth values. Each model in the grid search will use early stopping to tune the number of trees using the validation set AUC, as before.\nWe’ll use learning rate annealing to speed up convergence without sacrificing too much accuracy."
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "efcec746d3971accc310f3102e0e0a23b857bd02"
+      },
+      "cell_type": "code",
+      "source": "## Depth 10 is usually plenty of depth for most datasets, but you never know\n#hyper_params = list( max_depth = seq(1,29,2) )\nhyper_params = list( max_depth = c(4,6,8,12,16,20) ) ##faster for larger datasets\ngrid <- h2o.grid(\n  ## hyper parameters\n  hyper_params = hyper_params,\n  ## full Cartesian hyper-parameter search\n  search_criteria = list(strategy = \"Cartesian\"),\n  ## which algorithm to run\n  algorithm=\"gbm\",\n  ## identifier for the grid, to later retrieve it\n  grid_id=\"depth_grid\",\n  ## standard model parameters\n  x = predictors,\n  y = response,\n  training_frame = train,\n  validation_frame = valid,\n  ## more trees is better if the learning rate is small enough\n  ## here, use \"more than enough\" trees - we have early stopping\n  ntrees = 1000,\n  ## smaller learning rate is better\n  ## since we have learning_rate_annealing, we can afford to start with a bigger learning rate\n  learn_rate = 0.05,\n  ## learning rate annealing: learning_rate shrinks by 1% after every tree\n  ## (use 1.00 to disable, but then lower the learning_rate)\n  learn_rate_annealing = 0.99,\n  ## sample 80% of rows per tree\n  sample_rate = 0.8,\n  ## sample 80% of columns per split\n  col_sample_rate = 0.8,\n  ## fix a random number generator seed for reproducibility\n  seed = 1234,\n  ## early stopping once the validation AUC doesn't improve by at least 0.01% for 5 consecutive scoring events\n  stopping_rounds = 5,\n  stopping_tolerance = 1e-4,\n  stopping_metric = \"AUC\",\n  ## score every 10 trees to make early stopping reproducible (it depends on the scoring interval)\n  score_tree_interval = 10\n)\n## by default, display the grid search results sorted by increasing logloss (since this is a classification task)\ngrid\n## sort the grid models by decreasing AUC\nsortedGrid <- h2o.getGrid(\"depth_grid\", sort_by=\"auc\", decreasing = TRUE)\nsortedGrid\n## find the range of max_depth for the top 5 models\ntopDepths = sortedGrid@summary_table$max_depth[1:5]\nminDepth = min(as.numeric(topDepths))\nmaxDepth = max(as.numeric(topDepths))\nminDepth\nmaxDepth",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "78c8620426885519fa19ecbeb2c0d773c51eea30"
+      },
+      "cell_type": "code",
+      "source": "\n\nhyper_params = list(\n  ## restrict the search to the range of max_depth established above\n  #max_depth = seq(minDepth,maxDepth,1),\n  max_depth = 12,\n  ## search a large space of row sampling rates per tree\n  sample_rate = seq(0.2,1,0.01),\n  ## search a large space of column sampling rates per split\n  col_sample_rate = seq(0.2,1,0.01),\n  ## search a large space of column sampling rates per tree\n  col_sample_rate_per_tree = seq(0.2,1,0.01),\n  ## search a large space of how column sampling per split should change as a function of the depth of the split\n  col_sample_rate_change_per_level = seq(0.9,1.1,0.01),\n  ## search a large space of the number of min rows in a terminal node\n  min_rows = 2^seq(0,log2(nrow(train))-1,1),\n  ## search a large space of the number of bins for split-finding for continuous and integer columns\n  nbins = 2^seq(4,10,1),\n  ## search a large space of the number of bins for split-finding for categorical columns\n  nbins_cats = 2^seq(4,12,1),\n  ## search a few minimum required relative error improvement thresholds for a split to happen\n  min_split_improvement = c(0,1e-8,1e-6,1e-4),\n  ## try all histogram types (QuantilesGlobal and RoundRobin are good for numeric columns with outliers)\n  histogram_type = c(\"UniformAdaptive\",\"QuantilesGlobal\",\"RoundRobin\")\n)\nsearch_criteria = list(\n  ## Random grid search\n  strategy = \"RandomDiscrete\",\n  ## limit the runtime to 60 minutes\n  max_runtime_secs = 3600,\n  ## build no more than 100 models\n  max_models = 100,\n  ## random number generator seed to make sampling of parameter combinations reproducible\n  seed = 1234,\n  ## early stopping once the leaderboard of the top 5 models is converged to 0.1% relative difference\n  stopping_rounds = 5,\n  stopping_metric = \"AUC\",\n  stopping_tolerance = 1e-3\n)\ngrid <- h2o.grid(\n  ## hyper parameters\n  hyper_params = hyper_params,\n  ## hyper-parameter search configuration (see above)\n  search_criteria = search_criteria,\n  ## which algorithm to run\n  algorithm = \"gbm\",\n  ## identifier for the grid, to later retrieve it\n  grid_id = \"final_grid\",\n  ## standard model parameters\n  x = predictors,\n  y = response,\n  training_frame = train,\n  validation_frame = valid,\n  ## more trees is better if the learning rate is small enough\n  ## use \"more than enough\" trees - we have early stopping\n  ntrees = 10000,\n  ## smaller learning rate is better\n  ## since we have learning_rate_annealing, we can afford to start with a bigger learning rate\n  learn_rate = 0.05,\n  ## learning rate annealing: learning_rate shrinks by 1% after every tree\n  ## (use 1.00 to disable, but then lower the learning_rate)\n  learn_rate_annealing = 0.99,\n  ## early stopping based on timeout (no model should take more than 1 hour - modify as needed)\n  max_runtime_secs = 3600,\n  ## early stopping once the validation AUC doesn't improve by at least 0.01% for 5 consecutive scoring events\n  stopping_rounds = 5, stopping_tolerance = 1e-4, stopping_metric = \"AUC\",\n  ## score every 10 trees to make early stopping reproducible (it depends on the scoring interval)\n  score_tree_interval = 10,\n  ## base random number generator seed for each model (automatically gets incremented internally for each model)\n  seed = 1234\n)\n## Sort the grid models by AUC\nsortedGrid <- h2o.getGrid(\"final_grid\", sort_by = \"auc\", decreasing = TRUE)\nsortedGrid",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "eb31167c118ad8f615217520d29c52e243d96fc7"
+      },
+      "cell_type": "code",
+      "source": "for (i in 1:2) {\n  gbm <- h2o.getModel(sortedGrid@model_ids[[i]])\n  print(h2o.auc(h2o.performance(gbm, valid = TRUE)))\n}",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "8975766dd1e2f83151b3b1aabe0ea4370718e569"
+      },
+      "cell_type": "code",
+      "source": "gbm <- h2o.getModel(sortedGrid@model_ids[[1]])\nprint(h2o.auc(h2o.performance(gbm, newdata = test)))",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "_uuid": "86b04345580510927ec59dbace7f110949f4a784"
+      },
+      "cell_type": "markdown",
+      "source": "Now we can confirm that these parameters are generally sound, by building a GBM model on the whole dataset (instead of the 60%) and using internal 5-fold cross-validation (re-using all other parameters including the seed):"
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "17e5845b0da2a344c9994419d55c0407578601eb"
+      },
+      "cell_type": "code",
+      "source": "model <- do.call(h2o.gbm,\n        ## update parameters in place\n        {\n          p <- gbm@parameters\n          p$model_id = NULL          ## do not overwrite the original grid model\n          p$training_frame = data      ## use the full dataset\n          p$validation_frame = NULL  ## no validation frame\n          p$nfolds = 5               ## cross-validation\n          p\n        }\n)\nmodel@model$cross_validation_metrics_summary",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "7a5348ad0975e2a6c68a01dc4e74bdd4629cff3e"
+      },
+      "cell_type": "code",
+      "source": "predict <- function(job.title, w2v, gbm) {\n    words <- tokenize(as.character(as.h2o(job.title)))\n    job.title.vec <- h2o.transform(w2v, words, aggregate_method = \"AVERAGE\")\n    h2o.predict(gbm, job.title.vec)\n}",
+      "execution_count": 12,
+      "outputs": []
+    },
+    {
+      "metadata": {
+        "trusted": true,
+        "_uuid": "c18a3b25f0287f06d51e230fff562b051291a0f4"
+      },
+      "cell_type": "code",
+      "source": "print(\"Predict! prob for some toxic sentences\")\nprint(predict(\"Has the United States become the largest dictatorship in the world?\", w2v.model, model))\nprint(predict(\"Which babies are more sweeter to their parents? Dark skin babies or light skin babies?\", w2v.model, model))\nprint(predict(\"If blacks support school choice and mandatory sentencing for criminals why don't they vote Republican?\", w2v.model, model))\nprint(predict(\"I am gay boy and I love my cousin (boy). He is sexy, but I dont know what to do. He is hot, and I want to see his di**. What should I do?\", w2v.model, model))\nprint(predict(\"Which races have the smallest penis?\", w2v.model, model))\nprint(predict(\"Why do females find penises ugly?\", w2v.model, model))",
+      "execution_count": null,
+      "outputs": []
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "R",
+      "language": "R",
+      "name": "ir"
+    },
+    "language_info": {
+      "mimetype": "text/x-r-source",
+      "name": "R",
+      "pygments_lexer": "r",
+      "version": "3.4.2",
+      "file_extension": ".r",
+      "codemirror_mode": "r"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 1
+}
